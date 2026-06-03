@@ -1,0 +1,709 @@
+generator client {
+  provider = "prisma-client-js"
+  output = "../generated/client"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// =============================================================================
+// 01_CORE.PRISMA — Tenant Hierarchy, RBAC, Auth
+// =============================================================================
+// These tables are 100% Cain AIOS native.
+// No external system owns or influences this data.
+// This is the foundation everything else builds on.
+// =============================================================================
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum UserRole {
+  SUPER_ADMIN       // Cain Core — full platform control
+  SYSTEM_OPERATOR   // Infra, agent control, deployment
+  AGENCY_ADMIN      // Top of a tenant tree
+  PRODUCER          // Revenue-generating user
+  STAFF             // Service / support user
+  SUPPORT_OPS       // Internal ops
+  READ_ONLY         // Analyst / reporting only
+}
+
+enum UserStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING_INVITE
+}
+
+enum BillingPlan {
+  STARTER
+  GROWTH
+  PROFESSIONAL
+  ENTERPRISE
+  WHITE_LABEL
+}
+
+// =============================================================================
+// AGENCY
+// Top of the tenant tree.
+// One agency = one business operating on Cain AIOS.
+// White-label agencies get their own domain and branding.
+// =============================================================================
+
+model Agency {
+  id               String      @id @default(cuid())
+  name             String
+  slug             String      @unique
+  plan             BillingPlan @default(STARTER)
+  isWhiteLabel     Boolean     @default(false)
+  whiteLabelDomain String?
+  logoUrl          String?
+  primaryColor     String?
+  isActive         Boolean     @default(true)
+  trialEndsAt      DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  workspaces    Workspace[]
+  users        User[]
+  billing      AgencyBilling?
+  settings     AgencySetting[]
+  auditLogs    AuditLog[]
+  integrations IntegrationConnection[]
+
+  @@map("agencies")
+}
+
+// =============================================================================
+// WORKSPACE
+// Operational unit under an agency.
+// Maps to GHL Sub-account today.
+// Maps to HubSpot Portal, Zoho Org, Salesforce Org tomorrow.
+// In a single-agency setup this may be 1:1 with Agency.
+// =============================================================================
+
+model Workspace {
+  id        String   @id @default(cuid())
+  agencyId  String
+  name      String
+  slug      String
+  timezone  String   @default("UTC")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  agency       Agency                  @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  users        User[]
+  settings     WorkspaceSetting[]
+  integrations IntegrationConnection[]
+  agentRuns    AgentRun[]
+  auditLogs    AuditLog[]
+
+  @@unique([agencyId, slug])
+  @@map("workspaces")
+}
+
+// =============================================================================
+// USER
+// Platform user. Role-scoped. Workspace is optional — agency-level users
+// (Admin, Super Admin) sit above any single workspace.
+// =============================================================================
+
+model User {
+  id          String     @id @default(cuid())
+  agencyId    String
+  workspaceId  String?    // null = agency-wide user
+  email       String     @unique
+  firstName   String
+  lastName    String
+  avatarUrl   String?
+  role        UserRole
+  status      UserStatus @default(PENDING_INVITE)
+  lastLoginAt DateTime?
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  agency      Agency           @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  workspace    Workspace?        @relation(fields: [workspaceId], references: [id])
+  permissions UserPermission[]
+  agentRuns   AgentRun[]       @relation("AgentRunTrigger")
+  auditLogs   AuditLog[]
+
+  @@map("users")
+}
+
+// Fine-grained permission overrides on top of role defaults.
+// Role = default policy. UserPermission = explicit override.
+model UserPermission {
+  id        String   @id @default(cuid())
+  userId    String
+  resource  String   // e.g. "leads", "reports", "agent_runs"
+  action    String   // e.g. "read", "write", "delete", "export"
+  granted   Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, resource, action])
+  @@map("user_permissions")
+}
+
+// =============================================================================
+// SETTINGS
+// Key-value config store at agency and workspace level.
+// Namespaced to avoid collisions. Typed via Json value.
+// isSecret = encrypted at application layer before storage.
+// Avoids schema migrations for config additions.
+// =============================================================================
+
+model AgencySetting {
+  id        String   @id @default(cuid())
+  agencyId  String
+  namespace String   @default("general") // "ai", "notifications", "billing", "branding"
+  key       String
+  value     Json
+  isSecret  Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@unique([agencyId, namespace, key])
+  @@map("agency_settings")
+}
+
+model WorkspaceSetting {
+  id         String   @id @default(cuid())
+  workspaceId String
+  namespace  String   @default("general")
+  key        String
+  value      Json
+  isSecret   Boolean  @default(false)
+  updatedAt  DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, namespace, key])
+  @@map("workspace_settings")
+}
+
+// =============================================================================
+// BILLING
+// Agency-level. Charge per agency, not per workspace.
+// Stripe-ready. Seat and feature limits enforced here.
+// =============================================================================
+
+model AgencyBilling {
+  id                   String      @id @default(cuid())
+  agencyId             String      @unique
+  plan                 BillingPlan @default(STARTER)
+  stripeCustomerId     String?     @unique
+  stripeSubscriptionId String?     @unique
+  currentPeriodStart   DateTime?
+  currentPeriodEnd     DateTime?
+  cancelAtPeriodEnd    Boolean     @default(false)
+  trialEndsAt          DateTime?
+  seats                Int         @default(5)
+  maxWorkspaces         Int         @default(1)
+  maxAgents            Int         @default(5)
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  agency Agency @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+
+  @@map("agency_billing")
+}
+
+// =============================================================================
+// 02_INTEGRATION.PRISMA — Platform-Agnostic Integration Layer
+// =============================================================================
+// This is the entire surface between Cain AIOS and every external CRM/platform.
+//
+// Design contract:
+//   - Cain AIOS never hard-wires to GHL field names or IDs in core tables
+//   - All external IDs live here, never scattered across domain tables
+//   - Adding HubSpot, Zoho, Salesforce, AgencyZoom = new enum value + rows
+//   - No schema migration required for new providers
+//   - GHL is first-class but not the only class
+//
+// Tables built now:
+//   IntegrationProvider (enum)
+//   IntegrationConnection  — auth + credentials per provider per workspace
+//   ExternalRef            — maps any Cain record to its external counterpart
+//   WebhookEvent           — raw inbound events from any provider (add when live)
+//   IntegrationSyncLog     — audit trail of every sync operation
+// =============================================================================
+
+// =============================================================================
+// ENUMS
+// =============================================================================
+
+enum IntegrationProvider {
+  GHL         // GoHighLevel — V1, first-class
+  HUBSPOT     // Future
+  ZOHO        // Future
+  SALESFORCE  // Future
+  PIPEDRIVE   // Future
+  AGENCYZOOM  // Future 
+  EZLYNX      // Future 
+  CUSTOM      // Generic — webhook-based custom connector
+}
+
+enum IntegrationStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+  PENDING_AUTH
+  RATE_LIMITED
+  SUSPENDED
+}
+
+enum SyncDirection {
+  PULL  // External → Cain AIOS
+  PUSH  // Cain AIOS → External
+  BOTH
+}
+
+enum WebhookEventStatus {
+  RECEIVED    // Received, not yet processed
+  PROCESSING  // Currently being handled
+  PROCESSED   // Successfully handled
+  IGNORED     // Intentionally skipped (duplicate, irrelevant type)
+  FAILED      // Processing failed
+  RETRYING    // In retry queue
+}
+
+// =============================================================================
+// INTEGRATION CONNECTION
+// One row per provider per workspace.
+// Holds auth credentials and provider-specific config.
+//
+// Why workspaceId is nullable:
+//   Some providers auth at agency level (GHL Company token).
+//   Some auth per sub-account (GHL Workspace token).
+//   Both patterns supported by the same table.
+//
+// Why externalIds is Json:
+//   GHL needs: { companyId, workspaceId }
+//   HubSpot needs: { portalId, hubId }
+//   Salesforce needs: { orgId, instanceUrl }
+//   No schema migration when adding a provider.
+// =============================================================================
+
+model IntegrationConnection {
+  id          String              @id @default(cuid())
+  agencyId    String
+  workspaceId  String?             // null = agency-level connection
+  provider    IntegrationProvider
+  status      IntegrationStatus   @default(PENDING_AUTH)
+  displayName String?             // Human label e.g. "Main GHL Account"
+
+  // Auth — always encrypted at application layer before storage
+  // Never stored as plaintext
+  accessToken    String?          // encrypted
+  refreshToken   String?          // encrypted
+  tokenExpiresAt DateTime?
+  authScopes     String[]         @default([])
+
+  // Provider-specific external identity
+  // GHL:        { "companyId": "xxx", "workspaceId": "yyy" }
+  // HubSpot:    { "portalId": "zzz" }
+  // Salesforce: { "orgId": "aaa", "instanceUrl": "https://..." }
+  externalIds Json?
+
+  // Provider metadata — plan info, limits, feature flags
+  metadata Json?
+
+  // Rate limit tracking — enforced per connection
+  // GHL: 100 req/10s, 200k/day per workspace
+  // Other providers will have different limits — stored in metadata
+  dailyRequestCount Int       @default(0)
+  dailyRequestReset DateTime?
+
+  // Health tracking
+  lastSyncAt       DateTime?
+  lastErrorAt      DateTime?
+  lastErrorMessage String?
+
+  connectedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  agency      Agency    @relation(fields: [agencyId], references: [id], onDelete: Cascade)
+  workspace    Workspace? @relation(fields: [workspaceId], references: [id])
+  syncLogs    IntegrationSyncLog[]
+  webhookEvents WebhookEvent[]
+  apiUsage ApiUsage[]
+
+  @@unique([agencyId, workspaceId, provider])
+  @@map("integration_connections")
+}
+
+// =============================================================================
+// EXTERNAL REF
+// The portability contract. Maps any Cain AIOS record to its
+// counterpart in any external provider for agentic references.
+//
+// Why this exists as a separate table (not columns on domain tables):
+//   A lead can exist in GHL AND HubSpot simultaneously.
+//   When you migrate from GHL to HubSpot, you delete GHL refs, add HubSpot refs.
+//   Core domain tables never change.
+//   Querying "what is this lead's GHL contact ID" is one join, always.
+//
+// Usage:
+//   ExternalRef(provider: GHL, entity: "lead", localId: "clx123", externalId: "ghl_contact_abc")
+//   ExternalRef(provider: HUBSPOT, entity: "lead", localId: "clx123", externalId: "hs_123456")
+// =============================================================================
+
+model ExternalRef {
+  id           String              @id @default(cuid())
+  provider     IntegrationProvider
+  entity       String              // "lead", "appointment", "pipeline", "conversation", "task"
+  localId      String              // Cain AIOS record cuid
+  externalId   String              // Provider's native ID
+  workspaceRef  String?             // Provider's workspace/sub-account scoping ID
+                                   // GHL: workspaceId | HubSpot: portalId
+  metadata     Json?               // Extra provider-specific fields if needed
+  lastSyncedAt DateTime?
+  createdAt    DateTime            @default(now())
+  updatedAt    DateTime            @updatedAt
+
+  // A local record maps to exactly one external ID per provider
+  @@unique([provider, entity, localId])
+  // An external ID maps to exactly one local record per provider
+  @@unique([provider, entity, externalId])
+  @@map("external_refs")
+}
+
+// =============================================================================
+// WEBHOOK EVENT
+// Raw inbound events from any provider.
+// Append-only. Never mutated after creation.
+// Add this table when webhooks are actually live — not before.
+//
+// Why stored raw:
+//   Processing logic changes. Raw payload never does.
+//   Replay any event against updated logic.
+//   Full audit trail of what the provider actually sent.
+//
+// Routing:
+//   provider + eventType → handler
+//   workspaceRef routes to correct tenant context
+// =============================================================================
+
+model WebhookEvent {
+  id           String              @id @default(cuid())
+  connectionId String?             // Which integration sent this
+  provider     IntegrationProvider
+  eventType    String              // "contact.created", "opportunity.status_changed"
+  workspaceRef  String?             // Provider's workspace ID — routes to correct tenant
+  status       WebhookEventStatus  @default(RECEIVED)
+
+  // Raw payload — never modified
+  rawPayload   Json
+
+  // Processing result
+  processedAt  DateTime?
+  processingMs Int?                // How long processing took
+  error        String?
+  retryCount   Int                 @default(0)
+  nextRetryAt  DateTime?
+
+  // Idempotency — provider event IDs to prevent double processing
+  providerEventId String?          // Provider's own event/delivery ID
+
+  receivedAt DateTime @default(now())
+
+  connection IntegrationConnection? @relation(fields: [connectionId], references: [id])
+
+  @@index([provider, eventType])
+  @@index([workspaceRef])
+  @@index([status, nextRetryAt]) // for retry queue queries
+  @@map("webhook_events")
+}
+
+// =============================================================================
+// INTEGRATION SYNC LOG
+// Audit trail of every pull/push operation.
+// Answers: what synced, when, how many records, what failed.
+// =============================================================================
+
+model IntegrationSyncLog {
+  id             String              @id @default(cuid())
+  connectionId   String
+  provider       IntegrationProvider
+  entity         String              // "contacts", "opportunities", "appointments"
+  direction      SyncDirection
+  recordsTotal   Int                 @default(0)
+  recordsCreated Int                 @default(0)
+  recordsUpdated Int                 @default(0)
+  recordsSkipped Int                 @default(0)
+  recordsFailed  Int                 @default(0)
+  errorDetails   Json?
+  triggeredBy    String?             // "scheduler", "webhook", "manual", userId
+  startedAt      DateTime            @default(now())
+  completedAt    DateTime?
+  durationMs     Int?
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@map("integration_sync_logs")
+}
+
+// =============================================================================
+// 03_AGENTS.PRISMA — Agent Framework
+// =============================================================================
+// Every agent in the 35-agent registry runs through this framework.
+// No agent bypasses logging, cost tracking, or audit trail.
+//
+// Design principles:
+//   - AgentDefinition = the registry entry and config for each agent
+//   - AgentRun = immutable execution record, never deleted
+//   - Agent chains tracked via parentRunId
+//   - Cost governance enforced at definition level
+//   - LLM assignment + fallback per agent
+//   - Environment-aware (dev / staging / production)
+// =============================================================================
+
+model AgentDefinition {
+  id          String @id @default(cuid())
+  name        String @unique // "routing-agent", "crm-handoff-agent", "renewal-scorer"
+  displayName String
+  description String?
+  version     String @default("1.0.0")
+  isActive    Boolean @default(false) // off by default, explicitly enabled
+  isPilot     Boolean @default(false) // pilot mode — limited rollout
+
+  // LLM assignment
+  primaryModel  String  // "gpt-4o", "claude-3-5-sonnet-20241022"
+  fallbackModel String? // Used if primary fails or rate-limits
+  maxTokens     Int     @default(1000)
+  temperature   Float   @default(0.3)
+  systemPrompt  String?
+
+  // Cost governance — hard limits enforced before execution
+  maxCostPerRunUsd  Decimal? @db.Decimal(8, 6)
+  maxDailyBudgetUsd Decimal? @db.Decimal(10, 2)
+
+  // Retry config
+  maxRetries   Int @default(3)
+  retryDelayMs Int @default(1000)
+
+  // Security + access control
+  requiresApproval Boolean    @default(false)
+  allowedRoles     UserRole[]
+
+  // Deployment environment
+  environment String @default("production") // "dev" | "staging" | "production"
+
+  // Input/output schema validation
+  inputSchema  Json? // JSON Schema for input validation
+  outputSchema Json? // JSON Schema for output validation
+
+  // Metadata
+  tags     String[] @default([])
+  metadata Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  runs AgentRun[]
+
+  @@map("agent_definitions")
+}
+
+// =============================================================================
+// AGENT RUN
+// Immutable execution record. Never deleted, never mutated after completion.
+// One row per execution. Chains tracked via parentRunId.
+// =============================================================================
+
+model AgentRun {
+  id            String         @id @default(cuid())
+  agentId       String
+  workspaceId    String?        // which tenant context this ran in
+  triggeredById String?        // null = system/scheduled trigger
+
+  status        AgentRunStatus @default(QUEUED)
+
+  // Payloads — sanitized (PII stripped) before storage
+  input         Json?
+  output        Json?
+  error         String?
+
+  // LLM cost tracking — per run
+  modelUsed     String?
+  inputTokens   Int?
+  outputTokens  Int?
+  totalTokens   Int?
+  costUsd       Decimal? @db.Decimal(10, 6)
+
+  // Performance
+  startedAt   DateTime?
+  completedAt DateTime?
+  durationMs  Int?
+  retryCount  Int       @default(0)
+
+  // Chain tracking — for multi-agent workflows
+  parentRunId String?   // AgentRun that spawned this run
+  traceId     String?   // Shared across an entire chain
+
+  createdAt DateTime @default(now())
+
+  agent       AgentDefinition @relation(fields: [agentId], references: [id])
+  workspace    Workspace?       @relation(fields: [workspaceId], references: [id])
+  triggeredBy User?           @relation("AgentRunTrigger", fields: [triggeredById], references: [id])
+  parentRun   AgentRun?       @relation("AgentRunChain", fields: [parentRunId], references: [id])
+  childRuns   AgentRun[]      @relation("AgentRunChain")
+
+  @@index([agentId, status])
+  @@index([workspaceId, createdAt])
+  @@index([traceId])
+  @@map("agent_runs")
+}
+
+enum AgentRunStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  RETRYING
+  CANCELLED
+  AWAITING_APPROVAL
+}
+
+// =============================================================================
+// AGENT COST SUMMARY
+// Daily rollup per agent per workspace.
+// Used by Operator Dashboard for cost monitoring without scanning agent_runs.
+// Populated by a nightly job or after each run via increment.
+// =============================================================================
+
+model AgentCostSummary {
+  id            String   @id @default(cuid())
+  agentId       String
+  workspaceId    String?
+  date          DateTime @db.Date
+  totalRuns     Int      @default(0)
+  successRuns   Int      @default(0)
+  failedRuns    Int      @default(0)
+  totalTokens   Int      @default(0)
+  totalCostUsd  Decimal  @default(0) @db.Decimal(10, 4)
+  updatedAt     DateTime @updatedAt
+
+  @@unique([agentId, workspaceId, date])
+  @@map("agent_cost_summaries")
+}
+
+// =============================================================================
+// 04_AUDIT.PRISMA — Audit, Observability, API Usage
+// =============================================================================
+// Immutable audit trail. Append-only. Never deleted.
+// Covers: user actions, system events, integration events, agent activity.
+//
+// API usage tracking is per IntegrationConnection per day.
+// Enables rate limit enforcement and cost attribution.
+// Add api_usage table when rate limits become an active operational concern.
+// =============================================================================
+
+// =============================================================================
+// AUDIT LOG
+// One row per auditable event. Append-only, never mutated.
+// Covers both user actions and system actions.
+// =============================================================================
+
+model AuditLog {
+  id         String      @id @default(cuid())
+  agencyId   String?
+  workspaceId String?
+  userId     String?     // null = system action
+  action     AuditAction
+  entity     String      // table name: "contact_refs", "users", "integration_connections"
+  entityId   String?     // affected record ID
+  before     Json?       // state snapshot before change
+  after      Json?       // state snapshot after change
+  ipAddress  String?
+  userAgent  String?
+  metadata   Json?       // any additional context
+  createdAt  DateTime    @default(now())
+
+  agency   Agency?   @relation(fields: [agencyId], references: [id])
+  workspace Workspace? @relation(fields: [workspaceId], references: [id])
+  user     User?     @relation(fields: [userId], references: [id])
+
+  @@index([agencyId, createdAt])
+  @@index([entity, entityId])
+  @@index([userId, createdAt])
+  @@map("audit_logs")
+}
+
+enum AuditAction {
+  // User actions
+  LOGIN
+  LOGOUT
+  PASSWORD_CHANGE
+  INVITE_SENT
+  INVITE_ACCEPTED
+
+  // Data actions
+  CREATE
+  UPDATE
+  DELETE
+  EXPORT
+  IMPORT
+  BULK_UPDATE
+
+  // Permission actions
+  PERMISSION_CHANGE
+  ROLE_CHANGE
+
+  // Integration actions
+  INTEGRATION_CONNECT
+  INTEGRATION_DISCONNECT
+  INTEGRATION_AUTH_REFRESH
+  INTEGRATION_SYNC
+
+  // Agent actions
+  AGENT_RUN_TRIGGERED
+  AGENT_RUN_APPROVED
+  AGENT_RUN_CANCELLED
+  AGENT_ENABLED
+  AGENT_DISABLED
+
+  // Config actions
+  CONFIG_CHANGE
+  SETTING_CHANGE
+
+  // Billing actions
+  PLAN_CHANGE
+  BILLING_UPDATE
+}
+
+// =============================================================================
+// API USAGE
+// Per IntegrationConnection per day per endpoint.
+// Not required for V1 launch — add when rate limits need active management.
+// GHL: 200k requests/day per workspace.
+// Other providers will have their own limits stored in IntegrationConnection.metadata.
+//
+// Comment this model out for V1. Uncomment when needed.
+// =============================================================================
+
+model ApiUsage {
+  id              String              @id @default(cuid())
+  connectionId    String
+  provider        IntegrationProvider
+  date            DateTime            @db.Date
+  endpoint        String?             // "/contacts/search", "/opportunities"
+  requestCount    Int                 @default(0)
+  errorCount      Int                 @default(0)
+  rateLimitHits   Int                 @default(0)
+  avgResponseMs   Int?
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  connection IntegrationConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+
+  @@unique([connectionId, date, endpoint])
+  @@map("api_usage")
+}

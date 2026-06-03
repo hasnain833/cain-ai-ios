@@ -1,0 +1,15 @@
+{
+  "compilerOptions": {
+    "paths": {
+      "@shared/*": ["./packages/shared/src/*"],
+      "@cain-ai-os/database": ["./packages/database/src"]
+    }
+  },
+  "files": [],
+  "references": [
+    { "path": "packages/shared" },
+    { "path": "packages/database" },
+    { "path": "apps/frontend" },
+    { "path": "apps/backend" }
+  ]
+}
