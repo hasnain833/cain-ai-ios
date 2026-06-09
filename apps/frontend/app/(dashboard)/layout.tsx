@@ -20,6 +20,39 @@ export default async function DashboardLayout({
     redirect("/login");
   }
 
+  let platformUser: { role?: string } | null = null;
+  try {
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (token) {
+      const res = await fetch(
+        `${process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000"}/api/auth/me`,
+        {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: "no-store",
+        }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        platformUser = json.user;
+      }
+    }
+  } catch (err) {
+    console.error("Layout fetch auth/me failed:", err);
+  }
+
+  const isOperator = platformUser?.role === "SUPER_ADMIN" || platformUser?.role === "SYSTEM_OPERATOR";
+
+  const navItems = [
+    { label: "Dashboard", icon: "▤", href: "/dashboard" },
+    ...(isOperator ? [{ label: "Operator Portal", icon: "⚙", href: "/dashboard/operator" }] : []),
+    { label: "Leads", icon: "◎", href: "/dashboard/leads" },
+    { label: "Renewals", icon: "↻", href: "/dashboard/renewals" },
+    { label: "Appointments", icon: "◷", href: "/dashboard/appointments" },
+    { label: "Tasks", icon: "✓", href: "/dashboard/tasks" },
+    { label: "Pipelines", icon: "⇢", href: "/dashboard/pipelines" },
+  ];
+
   return (
     <div className="min-h-screen bg-zinc-950 flex">
       <aside className="w-60 shrink-0 border-r border-zinc-800 bg-zinc-900 flex flex-col p-4 gap-2">
@@ -33,16 +66,9 @@ export default async function DashboardLayout({
           <span className="text-sm font-bold text-white tracking-wide">Cain AIOS</span>
         </div>
 
-        {/* Nav items — skeleton, will be wired in Phase 5 */}
+        {/* Nav items — dynamic */}
         <nav className="flex flex-col gap-1">
-          {[
-            { label: "Dashboard", icon: "▤", href: "/dashboard" },
-            { label: "Leads", icon: "◎", href: "/dashboard/leads" },
-            { label: "Renewals", icon: "↻", href: "/dashboard/renewals" },
-            { label: "Appointments", icon: "◷", href: "/dashboard/appointments" },
-            { label: "Tasks", icon: "✓", href: "/dashboard/tasks" },
-            { label: "Pipelines", icon: "⇢", href: "/dashboard/pipelines" },
-          ].map((item) => (
+          {navItems.map((item) => (
             <a
               key={item.href}
               href={item.href}

@@ -71,7 +71,7 @@ export async function authenticate(
     return;
   }
 
-  if (dbUser.status !== "ACTIVE") {
+  if (dbUser.status !== "ACTIVE" && dbUser.status !== "PENDING_INVITE") {
     res.status(403).json({
       error: `Account is ${dbUser.status.toLowerCase()}. Contact your administrator.`,
     });

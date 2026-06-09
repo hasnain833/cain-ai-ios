@@ -20,6 +20,14 @@ app.use(express.json());
 app.use("/api/health", healthRouter);
 app.use("/api/auth", authRouter);
 
+import { oauthRouter, webhookRouter } from "./integrations/ghl/index.js";
+app.use("/api/integrations/ghl", oauthRouter);
+app.use("/api/integrations/ghl", webhookRouter);
+
+// Operator Router
+import operatorRouter from "./routes/operator.js";
+app.use("/api/operator", operatorRouter);
+
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
