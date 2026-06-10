@@ -231,4 +231,28 @@ export class GHLClient {
   public async getLocation(locationId: string): Promise<any> {
     return this.request(`/locations/${locationId}`);
   }
+
+  // Fetch opportunities from GHL
+  public async getOpportunities(locationId: string, queryParams: Record<string, any> = {}): Promise<any> {
+    const params = new URLSearchParams({ locationId, ...queryParams });
+    return this.request(`/opportunities/search?${params.toString()}`);
+  }
+
+  // Fetch contacts/leads from GHL
+  public async getContacts(locationId: string, queryParams: Record<string, any> = {}): Promise<any> {
+    const params = new URLSearchParams({ locationId, ...queryParams });
+    return this.request(`/contacts/?${params.toString()}`);
+  }
+
+  // Fetch tasks from GHL
+  public async getTasks(locationId: string, queryParams: Record<string, any> = {}): Promise<any> {
+    const params = new URLSearchParams({ locationId, ...queryParams });
+    return this.request(`/tasks/search?${params.toString()}`);
+  }
+
+  // Fetch appointments from GHL
+  public async getAppointments(locationId: string, queryParams: Record<string, any> = {}): Promise<any> {
+    const params = new URLSearchParams({ locationId, ...queryParams });
+    return this.request(`/calendars/events?${params.toString()}`);
+  }
 }

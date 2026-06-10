@@ -41,16 +41,21 @@ export default async function DashboardLayout({
     console.error("Layout fetch auth/me failed:", err);
   }
 
+  const isSuperAdmin = platformUser?.role === "SUPER_ADMIN";
+  const isAgencyAdmin = platformUser?.role === "SUPER_ADMIN" || platformUser?.role === "AGENCY_ADMIN";
   const isOperator = platformUser?.role === "SUPER_ADMIN" || platformUser?.role === "SYSTEM_OPERATOR";
 
   const navItems = [
     { label: "Dashboard", icon: "▤", href: "/dashboard" },
+    ...(isSuperAdmin ? [{ label: "Super Admin", icon: "⚿", href: "/dashboard/super-admin" }] : []),
+    ...(isAgencyAdmin ? [{ label: "Agency Admin", icon: "▧", href: "/dashboard/agency-admin" }] : []),
     ...(isOperator ? [{ label: "Operator Portal", icon: "⚙", href: "/dashboard/operator" }] : []),
     { label: "Leads", icon: "◎", href: "/dashboard/leads" },
     { label: "Renewals", icon: "↻", href: "/dashboard/renewals" },
     { label: "Appointments", icon: "◷", href: "/dashboard/appointments" },
     { label: "Tasks", icon: "✓", href: "/dashboard/tasks" },
     { label: "Pipelines", icon: "⇢", href: "/dashboard/pipelines" },
+    { label: "Conversations", icon: "✉", href: "/dashboard/conversations" },
   ];
 
   return (

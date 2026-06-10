@@ -28,6 +28,18 @@ app.use("/api/integrations/ghl", webhookRouter);
 import operatorRouter from "./routes/operator.js";
 app.use("/api/operator", operatorRouter);
 
+// Producer Router
+import producerRouter from "./routes/producer.js";
+app.use("/api/producer", producerRouter);
+
+// Super Admin Router
+import superAdminRouter from "./routes/superAdmin.js";
+app.use("/api/super-admin", superAdminRouter);
+
+// Agency Admin Router
+import agencyAdminRouter from "./routes/agencyAdmin.js";
+app.use("/api/agency-admin", agencyAdminRouter);
+
 app.use((_req, res) => {
   res.status(404).json({ error: "Not found" });
 });
